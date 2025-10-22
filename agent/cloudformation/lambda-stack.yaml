@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'BudgetBuddy Agent - Lambda Function with API Gateway'
+
+Parameters:
+  DatabaseStackName:
+    Type: String
+    Default: budgetbuddy-database
+    Description: Name of the database CloudFormation stack (to import VPC and security group)
+  
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Database password for Lambda environment variable
+  
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing Lambda deployment package
+  
+  LambdaS3Key:
+    Type: String
+    Default: lambda-deployment.zip
+    Description: S3 key for Lambda deployment package
+
+Resources:
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # Lambda Security Group
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for BudgetBuddy Lambda function
+      VpcId:
+        Fn::ImportValue: !Sub '${DatabaseStackName}-VPC'
+      Tags:
+        - Key: Name
+          Value: BudgetBuddy-Lambda-SG
+
+  # Allow Lambda to access Database
+  DBSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub '${DatabaseStackName}-DBSecurityGroup'
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Description: Allow Lambda to access database
+
+  # Lambda Function
+  ExpenseProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: budgetbuddy-expense-processor
+      Runtime: python3.12
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          DB_HOST:
+            Fn::ImportValue: !Sub '${DatabaseStackName}-DBEndpoint'
+          DB_NAME:
+            Fn::ImportValue: !Sub '${DatabaseStackName}-DBName'
+          DB_USER:
+            Fn::ImportValue: !Sub '${DatabaseStackName}-DBUsername'
+          DB_PASSWORD: !Ref DBPassword
+          DB_PORT:
+            Fn::ImportValue: !Sub '${DatabaseStackName}-DBPort'
+          BEDROCK_MODEL_ID: anthropic.claude-3-5-sonnet-20241022-v2:0
+          AWS_REGION: !Ref AWS::Region
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - Fn::Select:
+              - 0
+              - Fn::Split:
+                  - ','
+                  - Fn::ImportValue: !Sub '${DatabaseStackName}-Subnets'
+          - Fn::Select:
+              - 1
+              - Fn::Split:
+                  - ','
+                  - Fn::ImportValue: !Sub '${DatabaseStackName}-Subnets'
+
+  # API Gateway HTTP API
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: budgetbuddy-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'  # Update with specific domain in production
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+        MaxAge: 300
+
+  # API Gateway Integration
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ExpenseProcessorFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # API Gateway Route
+  HttpApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /expense'
+      Target: !Sub 'integrations/${HttpApiIntegration}'
+
+  # API Gateway Stage
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: prod
+      AutoDeploy: true
+
+  # Lambda Permission for API Gateway
+  ApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ExpenseProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*'
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiEndpoint'
+  
+  LambdaFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt ExpenseProcessorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaArn'
+  
+  LambdaSecurityGroupId:
+    Description: Lambda security group ID
+    Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaSecurityGroup'
+

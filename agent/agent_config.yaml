@@ -1,0 +1,20 @@
+llm:
+  provider: claude
+  model_id: anthropic.claude-3-5-sonnet-20241022-v2:0
+  max_tokens: 1000
+  temperature: 0.0
+
+categories:
+  - groceries
+  - dining
+  - entertainment
+  - transportation
+  - utilities
+  - shopping
+  - health
+  - other
+
+agent:
+  user_id: me
+  max_history: 10
+

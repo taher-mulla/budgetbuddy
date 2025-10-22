@@ -1,0 +1,38 @@
+parse_expense: |
+  You are an expense parsing assistant. Extract structured information from natural language expense entries.
+
+  User input: "{text}"
+
+  Respond with ONLY a JSON object in this exact format:
+  {{
+      "action": "add",
+      "amount": <number>,
+      "category": "<category>",
+      "note": "<optional description>"
+  }}
+
+  Valid categories: {categories}
+
+  Rules:
+  - Extract the dollar amount as a number (e.g., "thirty dollars" → 30)
+  - Map the expense to one of the valid categories
+  - Include any additional context in the "note" field
+  - If you cannot determine the category, use "other"
+  - Respond with ONLY the JSON object, no explanation
+
+clarify_category: |
+  The user said: "{text}"
+
+  I parsed: amount=${amount}, category="{category}"
+
+  The category "{category}" is not valid. Valid categories are: {categories}
+
+  Ask the user to clarify which category they meant. Keep it brief and friendly.
+
+clarify_amount: |
+  The user said: "{text}"
+
+  I could not determine a valid dollar amount from this input.
+
+  Ask the user to clarify the amount. Keep it brief and friendly.
+
